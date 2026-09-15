@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Environnements virtuels
+.venv/
+venv/
+env/
+
+# Secrets (clés API éventuelles : à saisir dans Streamlit Cloud, jamais commitées)
+.streamlit/secrets.toml
+.env
+
+# Document de travail d'origine
+Qwen_markdown_*.md
+
+# Divers
+.DS_Store
+.ipynb_checkpoints/
+*.log
