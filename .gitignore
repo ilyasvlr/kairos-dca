@@ -14,6 +14,9 @@ env/
 # Document de travail d'origine
 Qwen_markdown_*.md
 
+# Tests
+.pytest_cache/
+
 # Divers
 .DS_Store
 .ipynb_checkpoints/

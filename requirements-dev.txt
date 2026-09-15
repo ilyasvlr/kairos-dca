@@ -1,0 +1,4 @@
+# Dépendances de développement (tests). Pas nécessaire pour faire tourner
+# l'app — Streamlit Cloud n'installe que requirements.txt.
+-r requirements.txt
+pytest>=8.0

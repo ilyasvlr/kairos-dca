@@ -1,5 +1,7 @@
 # 🎯 Kairos DCA
 
+[![Tests](https://github.com/ilyasvlr/kairos-dca/actions/workflows/tests.yml/badge.svg)](https://github.com/ilyasvlr/kairos-dca/actions/workflows/tests.yml)
+
 Outil de backtesting du **DCA** (Dollar Cost Averaging, investissement programmé) sur crypto, actions et ETF.
 Il compare le DCA classique à des variantes dynamiques et montre, sur tout l'historique disponible,
 si ces variantes font réellement mieux.
@@ -121,7 +123,23 @@ core/
   macro_data.py            Séries FRED, DXY, VIX
   indicators.py            Indicateurs techniques et on-chain (approximations)
   ui.py                    Avertissement partagé, affiché une fois par app.py
+tests/
+  test_backtester.py       Conservation du capital, causalité (zéro biais d'anticipation), déterminisme, validation
+  test_metrics.py          XIRR (valeurs de référence, cas limites)
+  conftest.py               Prix synthétiques partagés (aucun appel réseau, rapide et reproductible en CI)
 ```
+
+## Tests
+
+```bash
+pip install -r requirements-dev.txt
+pytest -v
+```
+
+Tourne automatiquement sur chaque push via GitHub Actions (badge en haut de page). Les tests utilisent des prix
+synthétiques générés localement — aucun appel réseau — pour rester rapides et fiables en CI (~2 s, 40 tests).
+Le test le plus important, `test_causality_via_truncation`, vérifie qu'aucune stratégie ne regarde le futur :
+en tronquant la série de prix après un certain point, les achats déjà passés doivent rester strictement identiques.
 
 ## Stack
 
