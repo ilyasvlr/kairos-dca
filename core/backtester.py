@@ -198,34 +198,35 @@ class KairosScoreDCAStrategy(BaseDCAStrategy):
         return 0.5      # Marché cher/euphorique, on accumule au ralenti
 
 
-class DryPowderDCAStrategy(BaseDCAStrategy):
+class _ReserveDCAStrategy(BaseDCAStrategy):
     """
-    DCA avec réserve de cash (Dry Powder).
+    Base commune aux stratégies à réserve de cash (Dry Powder, Coffre).
 
     À chaque période, le budget est coupé en deux :
       - (1 - reserve_ratio) est acheté immédiatement (DCA de base)
       - reserve_ratio est mis de côté dans la réserve
 
-    Quand le drawdown passe sous dip_threshold, on injecte
-    deployment_multiplier × réserve en plus du DCA de base.
+    Quand `_is_triggered(state)` devient vrai, on injecte deployment_multiplier ×
+    réserve en plus du DCA de base. Les sous-classes ne définissent que le
+    déclencheur (`_is_triggered`) ; toute la mécanique de réserve/réarmement est
+    partagée ici pour éviter que deux implémentations divergent silencieusement.
 
-    rearm=False : (défaut) injection à chaque période tant que le drawdown reste
-                  sous le seuil (la réserve fraîchement accumulée est redéployée).
-    rearm=True  : une seule injection par creux ; la stratégie se réarme quand le
-                  drawdown repasse au-dessus du seuil. Tire au DÉBUT d'une baisse
-                  puis rate le point bas sur les baisses longues : 0/40 configs
-                  battent le DCA classique sur BTC 2021-10 -> 2024-04.
+    rearm=False : (défaut) injection à chaque période tant que la condition reste
+                  vraie (la réserve fraîchement accumulée est redéployée).
+    rearm=True  : une seule injection par épisode ; la stratégie se réarme quand
+                  la condition redevient fausse. Sur un Drawdown-trigger, tire au
+                  DÉBUT d'une baisse puis rate le point bas sur les baisses
+                  longues : 0/40 configs battent le DCA classique sur
+                  BTC 2021-10 -> 2024-04 (mesuré sur DryPowderDCAStrategy).
 
     Le capital total versé est exactement base_budget × nombre de périodes,
     quels que soient les paramètres.
     """
-    label = "Dry Powder"
 
     def __init__(
         self,
         base_budget: float,
         reserve_ratio: float,
-        dip_threshold: float,
         deployment_multiplier: float = 1.0,
         frequency: str = 'weekly',
         day_of_week: int = 1,
@@ -236,15 +237,12 @@ class DryPowderDCAStrategy(BaseDCAStrategy):
             raise ValueError(f"base_budget doit être > 0 (reçu {base_budget})")
         if not 0.0 <= reserve_ratio <= 1.0:
             raise ValueError(f"reserve_ratio doit être dans [0, 1] (reçu {reserve_ratio})")
-        if not -1.0 < dip_threshold < 0.0:
-            raise ValueError(f"dip_threshold doit être dans ]-1, 0[ (reçu {dip_threshold})")
         if not 0.0 < deployment_multiplier <= 1.0:
             # > 1 injecterait plus que la réserve : le capital versé dépasserait le budget
             raise ValueError(f"deployment_multiplier doit être dans ]0, 1] (reçu {deployment_multiplier})")
 
         self.base_budget = base_budget
         self.reserve_ratio = reserve_ratio
-        self.dip_threshold = dip_threshold
         self.deployment_multiplier = deployment_multiplier
         self.rearm = rearm
         self.dca_amount = base_budget * (1 - reserve_ratio)
@@ -267,9 +265,12 @@ class DryPowderDCAStrategy(BaseDCAStrategy):
     def cash_reserve(self) -> float:
         return self._reserve
 
+    def _is_triggered(self, state: Mapping[str, Any]) -> bool:
+        """Vrai si la condition de déploiement est remplie ce jour-là. À définir par la sous-classe."""
+        raise NotImplementedError
+
     def should_buy(self, date: pd.Timestamp, state: Mapping[str, Any]) -> Tuple[bool, float]:
-        dd = state.get('drawdown', np.nan)
-        below = not pd.isna(dd) and dd <= self.dip_threshold
+        below = self._is_triggered(state)
 
         # Réarmement évalué CHAQUE jour, pas seulement les jours d'achat : un passage
         # au-dessus du seuil entre deux achats hebdo doit être vu.
@@ -292,6 +293,112 @@ class DryPowderDCAStrategy(BaseDCAStrategy):
         return True, amount
 
 
+class DryPowderDCAStrategy(_ReserveDCAStrategy):
+    """
+    DCA avec réserve de cash, déclenchée par le drawdown par rapport à l'ATH causal.
+    Voir _ReserveDCAStrategy pour la mécanique de réserve/réarmement.
+    """
+    label = "Dry Powder"
+
+    def __init__(
+        self,
+        base_budget: float,
+        reserve_ratio: float,
+        dip_threshold: float,
+        deployment_multiplier: float = 1.0,
+        frequency: str = 'weekly',
+        day_of_week: int = 1,
+        day_of_month: int = 1,
+        rearm: bool = False,
+    ):
+        if not -1.0 < dip_threshold < 0.0:
+            raise ValueError(f"dip_threshold doit être dans ]-1, 0[ (reçu {dip_threshold})")
+        self.dip_threshold = dip_threshold
+        super().__init__(
+            base_budget=base_budget,
+            reserve_ratio=reserve_ratio,
+            deployment_multiplier=deployment_multiplier,
+            frequency=frequency,
+            day_of_week=day_of_week,
+            day_of_month=day_of_month,
+            rearm=rearm,
+        )
+
+    def _is_triggered(self, state: Mapping[str, Any]) -> bool:
+        dd = state.get('drawdown', np.nan)
+        return not pd.isna(dd) and dd <= self.dip_threshold
+
+
+class VaultDCAStrategy(_ReserveDCAStrategy):
+    """
+    DCA "Coffre" : tout le budget est mis de côté tant que l'indicateur choisi ne
+    déclenche pas l'achat. Au déclenchement, toute la réserve accumulée (budget
+    des périodes précédentes où l'on n'a rien acheté) est investie d'un coup.
+
+    C'est un cas particulier de _ReserveDCAStrategy avec reserve_ratio=1.0 (rien
+    n'est acheté hors déclenchement) et deployment_multiplier=1.0 (toute la
+    réserve part d'un coup) : seul le déclencheur change, et il peut être un
+    indicateur autre que le drawdown (RSI, VIX, Fear & Greed).
+
+    Le capital versé reste base_budget × nombre de périodes : si la condition ne
+    se déclenche jamais, tout finit en cash non investi (cash_reserve), jamais
+    perdu, jamais dépensé au-delà du budget.
+    """
+    label = "Coffre"
+
+    # indicateur -> (comparateur, borne basse, borne haute, seuil par défaut, description)
+    # 'le' = déclenche quand valeur <= seuil ; 'ge' = déclenche quand valeur >= seuil
+    INDICATORS: Dict[str, Dict[str, Any]] = {
+        'drawdown':   dict(op='le', lo=-0.99, hi=-0.01, default=-0.25,
+                           label="Drawdown", desc="Achat si drawdown ≤ seuil"),
+        'rsi':        dict(op='le', lo=1.0,   hi=99.0,  default=30.0,
+                           label="RSI (14)", desc="Achat si RSI ≤ seuil (survente)"),
+        'fear_greed': dict(op='le', lo=1.0,   hi=99.0,  default=25.0,
+                           label="Fear & Greed", desc="Achat si Fear & Greed ≤ seuil (peur)"),
+        'vix':        dict(op='ge', lo=1.0,   hi=99.0,  default=25.0,
+                           label="VIX", desc="Achat si VIX ≥ seuil (volatilité/peur)"),
+    }
+
+    def __init__(
+        self,
+        base_budget: float,
+        indicator: str = 'drawdown',
+        threshold: Optional[float] = None,
+        frequency: str = 'weekly',
+        day_of_week: int = 1,
+        day_of_month: int = 1,
+        rearm: bool = False,
+    ):
+        if indicator not in self.INDICATORS:
+            raise ValueError(f"Indicateur inconnu: {indicator!r} (choix: {list(self.INDICATORS)})")
+        spec = self.INDICATORS[indicator]
+        threshold = spec['default'] if threshold is None else threshold
+        if not spec['lo'] <= threshold <= spec['hi']:
+            raise ValueError(
+                f"threshold pour {indicator!r} doit être dans [{spec['lo']}, {spec['hi']}] (reçu {threshold})"
+            )
+
+        self.indicator = indicator
+        self.threshold = threshold
+        self._op = spec['op']
+
+        super().__init__(
+            base_budget=base_budget,
+            reserve_ratio=1.0,
+            deployment_multiplier=1.0,
+            frequency=frequency,
+            day_of_week=day_of_week,
+            day_of_month=day_of_month,
+            rearm=rearm,
+        )
+
+    def _is_triggered(self, state: Mapping[str, Any]) -> bool:
+        value = state.get(self.indicator, np.nan)
+        if pd.isna(value):
+            return False  # pas de donnée ce jour-là : on ne force jamais un achat sans info
+        return value <= self.threshold if self._op == 'le' else value >= self.threshold
+
+
 # ==============================================================================
 # 2. MOTEUR DE BACKTEST
 # ==============================================================================
@@ -308,6 +415,7 @@ class Backtester:
         fees: float = 0.001,
         fear_greed_history: Optional[pd.DataFrame] = None,
         long_prices: Optional[pd.DataFrame] = None,
+        vix_history: Optional[pd.DataFrame] = None,
     ):
         self.prices = prices.copy()
         self.strategy = strategy
@@ -317,6 +425,11 @@ class Backtester:
         # la 200WMA. Peut s'étendre au-delà de la fenêtre : tous les indicateurs sont
         # causaux, les données futures ne sont jamais lues.
         self.long_prices = long_prices
+        # DataFrame avec une colonne 'Close' (comme les prix) : historique VIX, pour
+        # le déclencheur Coffre "VIX". Optionnel — sans lui, l'indicateur 'vix' du
+        # market_state reste NaN partout et un déclencheur basé dessus ne se
+        # déclenche jamais (voir VaultDCAStrategy._is_triggered).
+        self.vix_history = vix_history
 
     def build_market_state(self) -> pd.DataFrame:
         """
@@ -371,6 +484,25 @@ class Backtester:
             df['fear_greed'] = pd.Index(df.index.date).map(fg_df['value']).to_numpy()
         else:
             df['fear_greed'] = 50.0
+
+        # 5. VIX (Match par date, avec ffill causal sur les jours non cotés : le
+        # VIX ne trade pas le week-end alors que la crypto trade 7j/7. ffill ne
+        # propage qu'une valeur PASSÉE vers un jour futur, jamais l'inverse.)
+        if self.vix_history is not None and not self.vix_history.empty:
+            vix_col = 'Close' if 'Close' in self.vix_history.columns else 'value'
+            vix_series = self.vix_history[vix_col].copy()
+            vix_index = pd.DatetimeIndex(vix_series.index)
+            if getattr(vix_index, 'tz', None) is not None:
+                vix_index = vix_index.tz_localize(None)
+            vix_series.index = vix_index
+            vix_series = vix_series.sort_index()
+
+            full_calendar = pd.date_range(vix_series.index.min(), vix_series.index.max(), freq='D')
+            vix_daily = vix_series.reindex(full_calendar).ffill()
+            vix_by_date = {d.date(): v for d, v in vix_daily.items()}
+            df['vix'] = pd.Index(df.index.date).map(vix_by_date).to_numpy()
+        else:
+            df['vix'] = np.nan
 
         df['price'] = close
 
@@ -522,6 +654,7 @@ def compare_strategies(
     fees: float = 0.001,
     fear_greed_history: Optional[pd.DataFrame] = None,
     long_prices: Optional[pd.DataFrame] = None,
+    vix_history: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
     """Compare plusieurs stratégies et retourne un tableau comparatif"""
     results = []
@@ -532,7 +665,7 @@ def compare_strategies(
     market_state = None
 
     for strategy in strategies:
-        backtester = Backtester(prices, strategy, fees, fear_greed_history, long_prices)
+        backtester = Backtester(prices, strategy, fees, fear_greed_history, long_prices, vix_history)
         if market_state is None:
             market_state = backtester.build_market_state()
         result = backtester.run(market_state=market_state)
@@ -542,6 +675,9 @@ def compare_strategies(
         freq = freq_fr.get(strategy.frequency, strategy.frequency)
         if isinstance(strategy, ClassicDCAStrategy):
             strategy_name = f"Classique ({freq}, ${strategy.base_amount:g})"
+        elif isinstance(strategy, VaultDCAStrategy):
+            ind_label = VaultDCAStrategy.INDICATORS[strategy.indicator]['label']
+            strategy_name = f"Dynamique: {label} [{ind_label}] ({freq}, ${strategy.base_amount:g})"
         else:
             strategy_name = f"Dynamique: {label} ({freq}, ${strategy.base_amount:g})"
 

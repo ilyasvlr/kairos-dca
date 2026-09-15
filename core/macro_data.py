@@ -93,9 +93,28 @@ def fetch_dxy() -> pd.DataFrame:
 
 
 def fetch_vix() -> pd.DataFrame:
-    """Récupère le VIX via yfinance"""
+    """Récupère le VIX (5 ans) via yfinance, pour l'affichage sur la page Indicateurs"""
     try:
         return _download_yf_5y("^VIX")
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _download_yf_range(symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
+    df = yf.Ticker(symbol).history(start=start_date, end=end_date)
+    if df.empty:
+        raise ValueError(f"aucune donnée reçue pour {symbol}")
+    return df[['Close']]
+
+
+def fetch_vix_history(start_date: str, end_date: str) -> pd.DataFrame:
+    """
+    Récupère le VIX sur une plage arbitraire, pour alimenter le déclencheur
+    Coffre "VIX" du backtester (qui peut porter sur des fenêtres > 5 ans).
+    """
+    try:
+        return _download_yf_range("^VIX", start_date, end_date)
     except Exception:
         return pd.DataFrame()
 

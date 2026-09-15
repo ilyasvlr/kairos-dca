@@ -124,8 +124,26 @@ def get_available_assets() -> dict:
         'ETF': {
             'S&P 500': 'SPY',
             'Nasdaq 100': 'QQQ',
-            'Total Market': 'VTI',
+            'Total Market (US)': 'VTI',
             'Bitcoin ETF': 'IBIT',
             'ARK Innovation': 'ARKK',
-        }
+        },
+        'Indices mondiaux': {
+            'MSCI World': 'URTH',
+            'MSCI All Country World': 'ACWI',
+            'Total World Stock': 'VT',
+        },
     }
+
+
+def get_flat_asset_list() -> list:
+    """
+    Version aplatie de get_available_assets(), triée par catégorie puis par nom :
+    une liste de dicts {category, name, ticker}, pour un unique sélecteur
+    recherchable (au lieu de deux menus déroulants dépendants).
+    """
+    flat = []
+    for category, names in get_available_assets().items():
+        for name, ticker in names.items():
+            flat.append({'category': category, 'name': name, 'ticker': ticker})
+    return flat

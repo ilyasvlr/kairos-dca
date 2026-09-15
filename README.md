@@ -17,11 +17,19 @@ si ces variantes font réellement mieux.
 | 📊 **Dashboard** | Prix, moyennes mobiles, volume, Fear & Greed (crypto) |
 | 🔬 **Backtest** | DCA classique : rendement, XIRR, drawdown, comparaison de fréquences |
 | 📈 **Indicateurs** | RSI, MACD, Bollinger, ATR, Stochastic RSI ; 200WMA, régression log, Rainbow (crypto) ; données macro FRED (taux Fed, 10 ans, CPI, M2) et DXY, VIX |
-| ⚡ **Dynamic DCA** | **Pédagogique.** Visualise sur *une seule* période comment se comportent les stratégies Drawdown, RSI et Kairos Score |
+| ⚡ **Dynamic DCA** | **Pédagogique.** Visualise sur *une seule* période comment se comportent les stratégies Drawdown, RSI, Kairos Score et Coffre. Un bouton « Test automatique » lance un panel fixe et classe les résultats (toujours sur cette seule fenêtre) |
 | 🛡️ **Robustesse** | **Décisionnel.** Teste 20 règles « Dry Powder » sur toutes les fenêtres glissantes de l'historique, contre le DCA classique |
 
 La page Robustesse ne donne pas de « réglage optimal ». Elle montre la distribution des résultats de chaque règle :
 % de fenêtres gagnées, écart médian, pire fenêtre, cash resté dormant, et stabilité du classement dans le temps.
+
+**Sélection d'actif** : un seul menu recherchable (crypto, actions, ETF, et indices mondiaux — MSCI World,
+MSCI ACWI, Total World Stock), plutôt que deux menus dépendants.
+
+**Stratégie Coffre (Vault)** : généralise le Dry Powder. Tout le budget est mis de côté jusqu'à ce qu'un
+indicateur choisi (Drawdown, RSI, VIX ou Fear & Greed) déclenche l'achat ; au déclenchement, toute la réserve
+accumulée est investie d'un coup. Le capital versé reste toujours exactement budget × nombre de périodes,
+qu'il soit acheté ou qu'il dorme en réserve — jamais perdu, jamais dépassé.
 
 ## Ce que montrent les données
 
@@ -93,7 +101,7 @@ la saisir dans les *Secrets* de Streamlit Cloud, jamais dans le dépôt.
 ```text
 app.py                     Accueil et configuration (actif, période, budget, frais)
 core/
-  backtester.py            Moteur de backtest et stratégies (Classique, Drawdown, RSI, Kairos Score, Dry Powder)
+  backtester.py            Moteur de backtest et stratégies (Classique, Drawdown, RSI, Kairos Score, Dry Powder, Coffre)
   robustness.py            Carte de robustesse sur fenêtres glissantes
   metrics.py               XIRR, drawdown, Sharpe, Sortino
   data_fetcher.py          Prix (yfinance) et Fear & Greed (alternative.me)

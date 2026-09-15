@@ -11,11 +11,13 @@ import sys
 
 sys.path.append('..')
 from core.data_fetcher import fetch_crypto_data, fetch_stock_data, fetch_fear_greed_history
+from core.macro_data import fetch_vix_history
 from core.backtester import (
     ClassicDCAStrategy,
     DrawdownDCAStrategy,
     RSIDCAStrategy,
     KairosScoreDCAStrategy,
+    VaultDCAStrategy,
     Backtester,
     compare_strategies
 )
@@ -66,6 +68,9 @@ with st.spinner(f"Chargement des données pour {asset_name}..."):
         # sinon un backtest démarré après un krach voit un drawdown de 0 au jour 1.
         long_start = (pd.Timestamp(start_date) - pd.DateOffset(years=5)).date()
         long_prices = fetch_stock_data(ticker, str(long_start), str(end_date))
+    # VIX : indicateur de marché global, disponible quel que soit l'actif backtesté
+    # (pas besoin d'être crypto). Utilisé par le déclencheur Coffre "VIX".
+    vix_history = fetch_vix_history(str(long_start), str(end_date))
 
 if prices.empty:
     st.error("Impossible de charger les données")
@@ -98,6 +103,8 @@ with col3:
     sim_fees = st.slider("Frais (%)", min_value=0.0, max_value=1.0, value=float(fees*100), step=0.01) / 100
 
 # Sélection des stratégies à comparer
+is_crypto = asset_type == 'crypto'
+
 st.markdown("**Stratégies à comparer :**")
 col1, col2, col3, col4 = st.columns(4)
 
@@ -108,7 +115,6 @@ with col2:
 with col3:
     use_rsi = st.checkbox("RSI-Based", value=False, help="x2.5 si RSI<30, x0.5 si RSI>60")
 with col4:
-    is_crypto = asset_type == 'crypto'
     use_kairos = st.checkbox(
         "Kairos Score",
         value=is_crypto,
@@ -118,30 +124,118 @@ with col4:
     if not is_crypto:
         st.caption("⚠️ Indisponible pour les actions/ETF")
 
+# --- Coffre : budget entier mis de côté jusqu'au déclenchement d'un indicateur ---
+col1, col2, col3, col4 = st.columns(4)
+with col1:
+    use_vault = st.checkbox(
+        "🔒 Coffre",
+        value=False,
+        help="Tout le budget est mis en réserve tant que l'indicateur ne déclenche pas. "
+             "Au déclenchement, toute la réserve accumulée est investie d'un coup. "
+             "Le capital versé reste budget × nb de périodes, quoi qu'il arrive.",
+    )
+with col2:
+    vault_indicator_options = ['drawdown', 'rsi', 'vix'] + (['fear_greed'] if is_crypto else [])
+    vault_indicator = st.selectbox(
+        "Déclencheur",
+        options=vault_indicator_options,
+        format_func=lambda k: VaultDCAStrategy.INDICATORS[k]['label'],
+        disabled=not use_vault,
+        key='vault_indicator',
+    )
+with col3:
+    _spec = VaultDCAStrategy.INDICATORS[vault_indicator]
+    vault_threshold = st.number_input(
+        "Seuil",
+        min_value=float(_spec['lo']),
+        max_value=float(_spec['hi']),
+        value=float(_spec['default']),
+        step=0.01 if vault_indicator == 'drawdown' else 1.0,
+        disabled=not use_vault,
+        help=_spec['desc'],
+        # Clé dépendante de l'indicateur : les bornes (ex. -0.99..-0.01 pour le
+        # drawdown, 1..99 pour le RSI) diffèrent trop pour partager un widget —
+        # sinon une ancienne valeur hors bornes fait planter le number_input.
+        key=f'vault_threshold_{vault_indicator}',
+    )
+with col4:
+    vault_rearm = st.checkbox(
+        "Réarmement",
+        value=False,
+        disabled=not use_vault,
+        help="Coché : un seul déploiement par épisode (tire au début, peut rater le creux). "
+             "Décoché (recommandé) : redéploie tant que la condition reste vraie.",
+        key='vault_rearm',
+    )
+if use_vault and not is_crypto:
+    st.caption("ℹ️ Fear & Greed indisponible hors crypto : reste à 50 en continu (option masquée ci-dessus).")
+
 st.caption(
     "⚠️ Les stratégies dynamiques n'investissent pas le même capital total que le DCA "
-    "classique (c'est le principe : on met plus quand c'est bas). Compare le **XIRR**, "
-    "pas le ROI ni la valeur finale."
+    "classique (c'est le principe : on met plus quand c'est bas — sauf le Coffre, qui "
+    "verse toujours exactement budget × nb de périodes). Compare le **XIRR**, "
+    "pas le ROI ni la valeur finale, entre stratégies à capital différent."
 )
+
+
+def _build_manual_strategies():
+    strategies = []
+    if use_classic:
+        strategies.append(ClassicDCAStrategy(base_amount=sim_amount, frequency=sim_freq))
+    if use_drawdown:
+        strategies.append(DrawdownDCAStrategy(base_amount=sim_amount, frequency=sim_freq))
+    if use_rsi:
+        strategies.append(RSIDCAStrategy(base_amount=sim_amount, frequency=sim_freq))
+    if use_kairos:
+        strategies.append(KairosScoreDCAStrategy(base_amount=sim_amount, frequency=sim_freq))
+    if use_vault:
+        strategies.append(VaultDCAStrategy(
+            base_budget=sim_amount, indicator=vault_indicator, threshold=vault_threshold,
+            frequency=sim_freq, rearm=vault_rearm,
+        ))
+    return strategies
+
+
+def _build_auto_strategies():
+    """Panel fixe pour le test automatique : mêmes stratégies que les cases à cocher
+    proposent, plus les 3-4 déclencheurs du Coffre, à seuils par défaut."""
+    strategies = [
+        ClassicDCAStrategy(base_amount=sim_amount, frequency=sim_freq),
+        DrawdownDCAStrategy(base_amount=sim_amount, frequency=sim_freq),
+        RSIDCAStrategy(base_amount=sim_amount, frequency=sim_freq),
+    ]
+    if is_crypto:
+        strategies.append(KairosScoreDCAStrategy(base_amount=sim_amount, frequency=sim_freq))
+    for indicator in ['drawdown', 'rsi', 'vix'] + (['fear_greed'] if is_crypto else []):
+        strategies.append(VaultDCAStrategy(
+            base_budget=sim_amount, indicator=indicator, frequency=sim_freq, rearm=False,
+        ))
+    return strategies
+
 
 # === SECTION 2 : EXÉCUTION ===
 # Les résultats restent affichés tant que les paramètres ne changent pas : sans ça,
 # le moindre widget (ex. choix de la stratégie à détailler) les ferait disparaître.
-params_key = (ticker, str(start_date), str(end_date), sim_amount, sim_freq, sim_fees,
-              use_classic, use_drawdown, use_rsi, use_kairos)
-if st.button("🚀 Lancer la comparaison", type="primary"):
-    st.session_state['dyn_params'] = params_key
+manual_key = (use_classic, use_drawdown, use_rsi, use_kairos,
+              use_vault, vault_indicator, vault_threshold, vault_rearm)
+params_key = ('manual', ticker, str(start_date), str(end_date), sim_amount, sim_freq, sim_fees, manual_key)
+auto_params_key = ('auto', ticker, str(start_date), str(end_date), sim_amount, sim_freq, sim_fees)
 
-if st.session_state.get('dyn_params') == params_key:
-    strategies_to_test = []
-    if use_classic:
-        strategies_to_test.append(ClassicDCAStrategy(base_amount=sim_amount, frequency=sim_freq))
-    if use_drawdown:
-        strategies_to_test.append(DrawdownDCAStrategy(base_amount=sim_amount, frequency=sim_freq))
-    if use_rsi:
-        strategies_to_test.append(RSIDCAStrategy(base_amount=sim_amount, frequency=sim_freq))
-    if use_kairos:
-        strategies_to_test.append(KairosScoreDCAStrategy(base_amount=sim_amount, frequency=sim_freq))
+col_run1, col_run2 = st.columns(2)
+with col_run1:
+    if st.button("🚀 Lancer la comparaison", type="primary"):
+        st.session_state['dyn_params'] = params_key
+with col_run2:
+    if st.button("🎲 Test automatique (Top 3)",
+                 help="Lance un panel fixe (Classique, Drawdown, RSI, Kairos si crypto, "
+                      "et le Coffre sur ses 3-4 déclencheurs) et classe le résultat."):
+        st.session_state['dyn_params'] = auto_params_key
+
+active_key = st.session_state.get('dyn_params')
+auto_mode = active_key == auto_params_key
+
+if active_key in (params_key, auto_params_key):
+    strategies_to_test = _build_auto_strategies() if auto_mode else _build_manual_strategies()
 
     if not strategies_to_test:
         st.warning("⚠️ Coche au moins une stratégie à comparer.")
@@ -149,8 +243,24 @@ if st.session_state.get('dyn_params') == params_key:
 
     with st.spinner("Calcul des stratégies en cours (Zero Look-Ahead Bias)..."):
         comparison_df = compare_strategies(
-            prices, strategies_to_test, sim_fees, fg_history, long_prices
+            prices, strategies_to_test, sim_fees, fg_history, long_prices, vix_history
         )
+
+        if auto_mode:
+            st.markdown("### 🏅 Top 3 (cette fenêtre)")
+            top3 = comparison_df.sort_values('XIRR %', ascending=False).head(3).reset_index(drop=True)
+            cols = st.columns(3)
+            for i, col in enumerate(cols):
+                if i >= len(top3):
+                    continue
+                row = top3.iloc[i]
+                with col:
+                    st.metric(f"#{i + 1}", row['Stratégie'], delta=f"{row['XIRR %']:.2f}% XIRR")
+            st.caption(
+                "⚠️ Classement calculé sur **cette seule fenêtre** : ce n'est pas une prédiction. "
+                "Une stratégie en tête ici peut être dernière sur une autre période — "
+                "vérifie sur 🛡️ Robustesse avant d'en tirer une conclusion."
+            )
 
         # === AFFICHAGE DES RÉSULTATS ===
         st.markdown("### 📋 Tableau comparatif (une seule fenêtre)")
@@ -198,12 +308,13 @@ if st.session_state.get('dyn_params') == params_key:
             "Stratégie à détailler",
             options=list(range(len(labels))),
             format_func=lambda i: labels[i],
-            index=1 if (use_classic and len(labels) > 1) else 0,  # 1re dynamique par défaut
+            index=1 if (isinstance(strategies_to_test[0], ClassicDCAStrategy) and len(labels) > 1) else 0,
+            # ^ 1re stratégie dynamique par défaut, si la 1re de la liste est le classique
             key='dyn_detail',
         )
         st.subheader(f"🔬 Détail : {labels[detail_idx]}")
 
-        backtester = Backtester(prices, strategies_to_test[detail_idx], sim_fees, fg_history, long_prices)
+        backtester = Backtester(prices, strategies_to_test[detail_idx], sim_fees, fg_history, long_prices, vix_history)
         detail_result = backtester.run()
 
         trades = detail_result['trades']

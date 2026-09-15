@@ -22,25 +22,22 @@ st.markdown("### Optimiseur de DCA multi-actifs avec indicateurs avancés")
 # Sidebar - Configuration globale
 st.sidebar.header("⚙️ Configuration")
 
-# Sélection de l'actif
-from core.data_fetcher import get_available_assets
+# Sélection de l'actif — un seul menu recherchable (tape pour filtrer), plutôt
+# que deux menus dépendants : plus rapide pour retrouver un actif précis.
+from core.data_fetcher import get_flat_asset_list
 from core.ui import render_disclaimer
 
-assets = get_available_assets()
-asset_category = st.sidebar.selectbox(
-    "Catégorie",
-    options=list(assets.keys()),
-    index=0
-)
-
-asset_names = list(assets[asset_category].keys())
-asset_name = st.sidebar.selectbox(
+flat_assets = get_flat_asset_list()
+default_idx = next((i for i, a in enumerate(flat_assets) if a['ticker'] == 'BTC-USD'), 0)
+asset_choice = st.sidebar.selectbox(
     "Actif",
-    options=asset_names,
-    index=0
+    options=flat_assets,
+    index=default_idx,
+    format_func=lambda a: f"{a['name']} ({a['ticker']}) — {a['category']}",
+    help="Tape pour rechercher : nom, ticker ou catégorie (ex. « MSCI », « BTC », « ETF »).",
 )
-
-ticker = assets[asset_category][asset_name]
+asset_name = asset_choice['name']
+ticker = asset_choice['ticker']
 
 # Période de backtest
 st.sidebar.subheader("📅 Période")
