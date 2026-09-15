@@ -278,111 +278,97 @@ def render_backtest(ticker, asset_name, start_date, end_date, base_amount, frequ
 
     st.subheader("🚀 Résultats du backtest")
 
-    # Résultats persistés en session_state (comme les onglets Dynamic DCA / Robustesse) :
-    # sans ça, interagir avec N'IMPORTE QUEL AUTRE widget de l'app (même un autre
-    # onglet) ferait disparaître ces résultats au prochain rerun.
-    bt_key = ('single', ticker, str(start_date), str(end_date), strategy_frequency, strategy_amount, strategy_fees)
-    if st.button("Lancer le backtest", type="primary", key='bt_run_btn'):
-        st.session_state['bt_single_key'] = bt_key
+    with st.spinner("Backtest en cours..."):
+        strategy = ClassicDCAStrategy(base_amount=strategy_amount, frequency=strategy_frequency)
+        backtester = Backtester(prices, strategy, strategy_fees)
+        result = backtester.run()
 
-    if st.session_state.get('bt_single_key') == bt_key:
-        with st.spinner("Backtest en cours..."):
-            strategy = ClassicDCAStrategy(base_amount=strategy_amount, frequency=strategy_frequency)
-            backtester = Backtester(prices, strategy, strategy_fees)
-            result = backtester.run()
+        metrics = result['metrics']
+        portfolio_values = result['portfolio_values']
+        total_invested_series = result['total_invested_series']
+        trades = result['trades']
 
-            metrics = result['metrics']
-            portfolio_values = result['portfolio_values']
-            total_invested_series = result['total_invested_series']
-            trades = result['trades']
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("ROI Total", f"{metrics['roi']:.2f}%",
+                      delta=f"${metrics['final_value'] - metrics['total_invested']:.2f}")
+        with col2:
+            st.metric(
+                "XIRR (annualisé)", f"{metrics['xirr']:.2f}%",
+                help="Rendement pondéré par le timing de chaque versement. "
+                     f"Le CAGR lump-sum affiche {metrics['cagr']:.2f}% mais suppose "
+                     "que tout a été investi au jour 1 — faux en DCA."
+            )
+        with col3:
+            st.metric("Max Drawdown", f"{metrics['max_drawdown']:.2f}%")
+        with col4:
+            st.metric("Sharpe Ratio", f"{metrics['sharpe_ratio']:.2f}")
 
-            st.markdown("### 📊 Métriques de performance")
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric("ROI Total", f"{metrics['roi']:.2f}%",
-                          delta=f"${metrics['final_value'] - metrics['total_invested']:.2f}")
-            with col2:
-                st.metric(
-                    "XIRR (annualisé)", f"{metrics['xirr']:.2f}%",
-                    help="Rendement pondéré par le timing de chaque versement. "
-                         f"Le CAGR lump-sum affiche {metrics['cagr']:.2f}% mais suppose "
-                         "que tout a été investi au jour 1 — faux en DCA."
-                )
-            with col3:
-                st.metric("Max Drawdown", f"{metrics['max_drawdown']:.2f}%")
-            with col4:
-                st.metric("Sharpe Ratio", f"{metrics['sharpe_ratio']:.2f}")
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Total investi", f"${metrics['total_invested']:,.2f}")
+        with col2:
+            st.metric("Valeur finale", f"${metrics['final_value']:,.2f}")
+        with col3:
+            st.metric("Nombre d'achats", f"{metrics['num_trades']}")
+        with col4:
+            st.metric("Win rate", f"{metrics['win_rate']:.1f}%")
 
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric("Total investi", f"${metrics['total_invested']:,.2f}")
-            with col2:
-                st.metric("Valeur finale", f"${metrics['final_value']:,.2f}")
-            with col3:
-                st.metric("Nombre d'achats", f"{metrics['num_trades']}")
-            with col4:
-                st.metric("Win rate", f"{metrics['win_rate']:.1f}%")
+        st.markdown("### 📈 Évolution du portfolio")
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=portfolio_values.index, y=portfolio_values, mode='lines',
+                                 name='Valeur du portfolio', line=dict(color='#00D4AA', width=2)))
+        fig.add_trace(go.Scatter(x=total_invested_series.index, y=total_invested_series, mode='lines',
+                                 name='Total investi', line=dict(color='#FF6347', width=2, dash='dash')))
+        if not trades.empty:
+            fig.add_trace(go.Scatter(x=trades['date'], y=trades['price'] * trades['coins'], mode='markers',
+                                     name='Achats', marker=dict(color='#FFD700', size=6, symbol='triangle-up')))
+        fig.update_layout(height=500, xaxis_title="Date", yaxis_title="Valeur ($)",
+                          hovermode='x unified', showlegend=True)
+        st.plotly_chart(fig, width='stretch')
 
-            st.markdown("### 📈 Évolution du portfolio")
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(x=portfolio_values.index, y=portfolio_values, mode='lines',
-                                     name='Valeur du portfolio', line=dict(color='#00D4AA', width=2)))
-            fig.add_trace(go.Scatter(x=total_invested_series.index, y=total_invested_series, mode='lines',
-                                     name='Total investi', line=dict(color='#FF6347', width=2, dash='dash')))
-            if not trades.empty:
-                fig.add_trace(go.Scatter(x=trades['date'], y=trades['price'] * trades['coins'], mode='markers',
-                                         name='Achats', marker=dict(color='#FFD700', size=6, symbol='triangle-up')))
-            fig.update_layout(height=500, xaxis_title="Date", yaxis_title="Valeur ($)",
-                              hovermode='x unified', showlegend=True)
-            st.plotly_chart(fig, width='stretch')
+        st.markdown("### 💰 Prix avec points d'achat")
+        fig_price = go.Figure()
+        fig_price.add_trace(go.Scatter(x=prices.index, y=prices['Close'], mode='lines', name='Prix',
+                                       line=dict(color='#00D4AA', width=2)))
+        if not trades.empty:
+            fig_price.add_trace(go.Scatter(x=trades['date'], y=trades['price'], mode='markers', name='Achats',
+                                           marker=dict(color='#FFD700', size=8, symbol='triangle-up')))
+        fig_price.update_layout(height=400, xaxis_title="Date", yaxis_title="Prix ($)", hovermode='x unified')
+        st.plotly_chart(fig_price, width='stretch')
 
-            st.markdown("### 💰 Prix avec points d'achat")
-            fig_price = go.Figure()
-            fig_price.add_trace(go.Scatter(x=prices.index, y=prices['Close'], mode='lines', name='Prix',
-                                           line=dict(color='#00D4AA', width=2)))
-            if not trades.empty:
-                fig_price.add_trace(go.Scatter(x=trades['date'], y=trades['price'], mode='markers', name='Achats',
-                                               marker=dict(color='#FFD700', size=8, symbol='triangle-up')))
-            fig_price.update_layout(height=400, xaxis_title="Date", yaxis_title="Prix ($)", hovermode='x unified')
-            st.plotly_chart(fig_price, width='stretch')
-
-            if not trades.empty:
-                st.markdown("### 📋 Historique des achats")
-                trades_display = trades.copy()
-                trades_display['date'] = trades_display['date'].dt.strftime('%Y-%m-%d')
-                trades_display = trades_display.rename(columns={
-                    'date': 'Date', 'price': 'Prix', 'amount': 'Montant', 'coins': 'Quantité', 'fees': 'Frais'
-                })
-                st.dataframe(trades_display[['Date', 'Prix', 'Montant', 'Quantité', 'Frais']],
-                            width='stretch', hide_index=True)
+        if not trades.empty:
+            st.markdown("### 📋 Historique des achats")
+            trades_display = trades.copy()
+            trades_display['date'] = trades_display['date'].dt.strftime('%Y-%m-%d')
+            trades_display = trades_display.rename(columns={
+                'date': 'Date', 'price': 'Prix', 'amount': 'Montant', 'coins': 'Quantité', 'fees': 'Frais'
+            })
+            st.dataframe(trades_display[['Date', 'Prix', 'Montant', 'Quantité', 'Frais']],
+                        width='stretch', hide_index=True)
 
     st.markdown("---")
     st.subheader("🔄 Comparaison de stratégies")
     st.markdown("Compare différentes fréquences et montants")
 
-    cmp_key = ('cmp', ticker, str(start_date), str(end_date), fees)
-    if st.button("Comparer les stratégies", key='bt_cmp_btn'):
-        st.session_state['bt_cmp_key'] = cmp_key
+    with st.spinner("Comparaison en cours..."):
+        strategies = [
+            ClassicDCAStrategy(base_amount=50, frequency='daily'),
+            ClassicDCAStrategy(base_amount=100, frequency='daily'),
+            ClassicDCAStrategy(base_amount=350, frequency='weekly'),
+            ClassicDCAStrategy(base_amount=700, frequency='weekly'),
+            ClassicDCAStrategy(base_amount=1500, frequency='monthly'),
+            ClassicDCAStrategy(base_amount=3000, frequency='monthly'),
+        ]
+        comparison_df = compare_strategies(prices, strategies, fees)
+        st.dataframe(comparison_df, width='stretch', hide_index=True)
 
-    if st.session_state.get('bt_cmp_key') == cmp_key:
-        with st.spinner("Comparaison en cours..."):
-            strategies = [
-                ClassicDCAStrategy(base_amount=50, frequency='daily'),
-                ClassicDCAStrategy(base_amount=100, frequency='daily'),
-                ClassicDCAStrategy(base_amount=350, frequency='weekly'),
-                ClassicDCAStrategy(base_amount=700, frequency='weekly'),
-                ClassicDCAStrategy(base_amount=1500, frequency='monthly'),
-                ClassicDCAStrategy(base_amount=3000, frequency='monthly'),
-            ]
-            comparison_df = compare_strategies(prices, strategies, fees)
-            st.dataframe(comparison_df, width='stretch', hide_index=True)
-
-            fig_comp = go.Figure()
-            for idx, row in comparison_df.iterrows():
-                fig_comp.add_trace(go.Bar(x=[row['Stratégie']], y=[row['ROI %']],
-                                          name=row['Stratégie'], marker_color='#00D4AA'))
-            fig_comp.update_layout(height=400, xaxis_title="Stratégie", yaxis_title="ROI (%)", showlegend=False)
-            st.plotly_chart(fig_comp, width='stretch')
+        fig_comp = go.Figure()
+        for idx, row in comparison_df.iterrows():
+            fig_comp.add_trace(go.Bar(x=[row['Stratégie']], y=[row['ROI %']],
+                                      name=row['Stratégie'], marker_color='#00D4AA'))
+        fig_comp.update_layout(height=400, xaxis_title="Stratégie", yaxis_title="ROI (%)", showlegend=False)
+        st.plotly_chart(fig_comp, width='stretch')
 
 
 # ==============================================================================
@@ -681,53 +667,33 @@ def render_dynamic_dca(ticker, asset_name, start_date, end_date, base_amount, fr
 
     is_crypto = asset_type == 'crypto'
 
-    st.markdown("**Stratégies à comparer :**")
-    col1, col2, col3, col4 = st.columns(4)
+    # Panel fixe, toujours calculé (pas de case à cocher pour l'activer) :
+    # Classique, Drawdown, RSI, Kairos (si crypto), Coffre. Seul le déclencheur du
+    # Coffre reste configurable, en direct (change le résultat sans rien "lancer").
+    st.markdown("**🔒 Coffre — déclencheur**")
+    col1, col2, col3 = st.columns(3)
     with col1:
-        use_classic = st.checkbox("DCA Classique", value=True, key='dyn_use_classic')
-    with col2:
-        use_drawdown = st.checkbox("Drawdown-Based", value=True, help="x2 à -20%, x3 à -40%, x5 à -60%", key='dyn_use_drawdown')
-    with col3:
-        use_rsi = st.checkbox("RSI-Based", value=False, help="x2.5 si RSI<30, x0.5 si RSI>60", key='dyn_use_rsi')
-    with col4:
-        use_kairos = st.checkbox(
-            "Kairos Score", value=is_crypto, disabled=not is_crypto,
-            help="Score combiné F&G + 200WMA + RSI (Crypto uniquement)", key='dyn_use_kairos',
-        )
-        if not is_crypto:
-            st.caption("⚠️ Indisponible pour les actions/ETF")
-
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        use_vault = st.checkbox(
-            "🔒 Coffre", value=False,
-            help="Tout le budget est mis en réserve tant que l'indicateur ne déclenche pas. "
-                 "Au déclenchement, toute la réserve accumulée est investie d'un coup. "
-                 "Le capital versé reste budget × nb de périodes, quoi qu'il arrive.",
-            key='dyn_use_vault',
-        )
-    with col2:
         vault_indicator_options = ['drawdown', 'rsi', 'vix'] + (['fear_greed'] if is_crypto else [])
         vault_indicator = st.selectbox(
-            "Déclencheur", options=vault_indicator_options,
+            "Indicateur", options=vault_indicator_options,
             format_func=lambda k: VaultDCAStrategy.INDICATORS[k]['label'],
-            disabled=not use_vault, key='vault_indicator',
+            key='vault_indicator',
         )
-    with col3:
+    with col2:
         _spec = VaultDCAStrategy.INDICATORS[vault_indicator]
         vault_threshold = st.number_input(
             "Seuil", min_value=float(_spec['lo']), max_value=float(_spec['hi']), value=float(_spec['default']),
-            step=0.01 if vault_indicator == 'drawdown' else 1.0, disabled=not use_vault, help=_spec['desc'],
+            step=0.01 if vault_indicator == 'drawdown' else 1.0, help=_spec['desc'],
             key=f'vault_threshold_{vault_indicator}',
         )
-    with col4:
+    with col3:
         vault_rearm = st.checkbox(
-            "Réarmement", value=False, disabled=not use_vault,
+            "Réarmement", value=False,
             help="Coché : un seul déploiement par épisode (tire au début, peut rater le creux). "
                  "Décoché (recommandé) : redéploie tant que la condition reste vraie.",
             key='vault_rearm',
         )
-    if use_vault and not is_crypto:
+    if not is_crypto:
         st.caption("ℹ️ Fear & Greed indisponible hors crypto : reste à 50 en continu (option masquée ci-dessus).")
 
     st.caption(
@@ -737,196 +703,152 @@ def render_dynamic_dca(ticker, asset_name, start_date, end_date, base_amount, fr
         "pas le ROI ni la valeur finale, entre stratégies à capital différent."
     )
 
-    def _build_manual_strategies():
-        strategies = []
-        if use_classic:
-            strategies.append(ClassicDCAStrategy(base_amount=sim_amount, frequency=sim_freq))
-        if use_drawdown:
-            strategies.append(DrawdownDCAStrategy(base_amount=sim_amount, frequency=sim_freq))
-        if use_rsi:
-            strategies.append(RSIDCAStrategy(base_amount=sim_amount, frequency=sim_freq))
-        if use_kairos:
-            strategies.append(KairosScoreDCAStrategy(base_amount=sim_amount, frequency=sim_freq))
-        if use_vault:
-            strategies.append(VaultDCAStrategy(
-                base_budget=sim_amount, indicator=vault_indicator, threshold=vault_threshold,
-                frequency=sim_freq, rearm=vault_rearm,
+    strategies_to_test = [
+        ClassicDCAStrategy(base_amount=sim_amount, frequency=sim_freq),
+        DrawdownDCAStrategy(base_amount=sim_amount, frequency=sim_freq),
+        RSIDCAStrategy(base_amount=sim_amount, frequency=sim_freq),
+    ]
+    if is_crypto:
+        strategies_to_test.append(KairosScoreDCAStrategy(base_amount=sim_amount, frequency=sim_freq))
+    strategies_to_test.append(VaultDCAStrategy(
+        base_budget=sim_amount, indicator=vault_indicator, threshold=vault_threshold,
+        frequency=sim_freq, rearm=vault_rearm,
+    ))
+
+    with st.spinner("Calcul des stratégies en cours (Zero Look-Ahead Bias)..."):
+        comparison_df = compare_strategies(prices, strategies_to_test, sim_fees, fg_history, long_prices, vix_history)
+
+        st.markdown("### 🏅 Top 3 (cette fenêtre)")
+        top3 = comparison_df.sort_values('XIRR %', ascending=False).head(3).reset_index(drop=True)
+        cols = st.columns(3)
+        for i, col in enumerate(cols):
+            if i >= len(top3):
+                continue
+            row = top3.iloc[i]
+            with col:
+                st.metric(f"#{i + 1}", row['Stratégie'], delta=f"{row['XIRR %']:.2f}% XIRR")
+        st.caption(
+            "⚠️ Classement calculé sur **cette seule fenêtre** : ce n'est pas une prédiction. "
+            "Une stratégie en tête ici peut être dernière sur une autre période — "
+            "vérifie sur 🛡️ Robustesse avant d'en tirer une conclusion."
+        )
+
+        st.markdown("### 📋 Tableau comparatif (une seule fenêtre)")
+        display_df = comparison_df.copy()
+        display_df['Investi'] = display_df['Investi'].apply(lambda x: f"${x:,.0f}")
+        display_df['Valeur Finale'] = display_df['Valeur Finale'].apply(lambda x: f"${x:,.0f}")
+        display_df['ROI %'] = display_df['ROI %'].apply(lambda x: f"{x:.2f}%")
+        display_df['XIRR %'] = display_df['XIRR %'].apply(lambda x: f"{x:.2f}%")
+        display_df['Max DD %'] = display_df['Max DD %'].apply(lambda x: f"{x:.2f}%")
+        display_df['Coût de revient'] = display_df['Coût de revient'].apply(
+            lambda x: f"${x:,.0f}" if x >= 1000 else f"${x:,.2f}"
+        )
+        st.dataframe(display_df, width='stretch', hide_index=True)
+
+        fig_bar = go.Figure()
+        fig_bar.add_trace(go.Bar(
+            x=comparison_df['Stratégie'], y=comparison_df['XIRR %'],
+            text=comparison_df['XIRR %'].apply(lambda x: f"{x:.1f}%"), textposition='auto',
+            marker_color='#2a78d6'
+        ))
+        fig_bar.update_layout(height=400, title="Rendement Annualisé (XIRR) par Stratégie",
+                              xaxis_title="Stratégie", yaxis_title="XIRR (%)", showlegend=False)
+        st.plotly_chart(fig_bar, width='stretch')
+
+        st.markdown("### 📈 Toutes les stratégies, une seule courbe chacune")
+        _ms_all = Backtester(prices, strategies_to_test[0], sim_fees, fg_history, long_prices, vix_history).build_market_state()
+        fig_overlay = go.Figure()
+        for strat in strategies_to_test:
+            res = Backtester(prices, strat, sim_fees, fg_history, long_prices, vix_history).run(market_state=_ms_all)
+            label = getattr(strat, 'label', strat.__class__.__name__)
+            if isinstance(strat, VaultDCAStrategy):
+                label = f"Coffre [{VaultDCAStrategy.INDICATORS[strat.indicator]['label']}]"
+            pv = res['portfolio_values']
+            fig_overlay.add_trace(go.Scatter(
+                x=pv.index, y=pv, mode='lines', name=label,
+                hovertemplate=f"<b>{label}</b><br>%{{x|%Y-%m-%d}} : $%{{y:,.0f}}<extra></extra>",
             ))
-        return strategies
+        fig_overlay.update_layout(
+            height=500, xaxis_title="Date", yaxis_title="Valeur du portefeuille ($)", hovermode='x unified',
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        )
+        st.plotly_chart(fig_overlay, width='stretch')
+        st.caption(
+            "💡 Clique un nom dans la légende pour cacher/montrer sa courbe, double-clique pour "
+            "l'isoler. La courbe la plus haute à la fin n'a gagné que sur **cette fenêtre précise** — "
+            "voir 🛡️ Robustesse pour savoir si ça se reproduit ailleurs."
+        )
 
-    def _build_auto_strategies():
-        strategies = [
-            ClassicDCAStrategy(base_amount=sim_amount, frequency=sim_freq),
-            DrawdownDCAStrategy(base_amount=sim_amount, frequency=sim_freq),
-            RSIDCAStrategy(base_amount=sim_amount, frequency=sim_freq),
-        ]
-        if is_crypto:
-            strategies.append(KairosScoreDCAStrategy(base_amount=sim_amount, frequency=sim_freq))
-        for indicator in ['drawdown', 'rsi', 'vix'] + (['fear_greed'] if is_crypto else []):
-            strategies.append(VaultDCAStrategy(base_budget=sim_amount, indicator=indicator, frequency=sim_freq, rearm=False))
-        return strategies
+        st.markdown("---")
+        labels = comparison_df['Stratégie'].tolist()
+        detail_idx = st.selectbox(
+            "Stratégie à détailler", options=list(range(len(labels))), format_func=lambda i: labels[i],
+            index=1 if len(labels) > 1 else 0,  # 1re stratégie dynamique par défaut (0 = Classique)
+            key='dyn_detail',
+        )
+        st.subheader(f"🔬 Détail : {labels[detail_idx]}")
 
-    manual_key = (use_classic, use_drawdown, use_rsi, use_kairos, use_vault, vault_indicator, vault_threshold, vault_rearm)
-    params_key = ('manual', ticker, str(start_date), str(end_date), sim_amount, sim_freq, sim_fees, manual_key)
-    auto_params_key = ('auto', ticker, str(start_date), str(end_date), sim_amount, sim_freq, sim_fees)
+        backtester = Backtester(prices, strategies_to_test[detail_idx], sim_fees, fg_history, long_prices, vix_history)
+        detail_result = backtester.run()
 
-    col_run1, col_run2 = st.columns(2)
-    with col_run1:
-        if st.button("🚀 Lancer la comparaison", type="primary", key='dyn_run_btn'):
-            st.session_state['dyn_params'] = params_key
-    with col_run2:
-        if st.button(
-            "🎲 Test automatique (Top 3)", key='dyn_auto_btn',
-            help="Lance un panel fixe (Classique, Drawdown, RSI, Kairos si crypto, "
-                 "et le Coffre sur ses 3-4 déclencheurs) et classe le résultat."
-        ):
-            st.session_state['dyn_params'] = auto_params_key
+        trades = detail_result['trades']
+        portfolio_values = detail_result['portfolio_values']
+        total_invested_series = detail_result['total_invested_series']
+        market_state = detail_result['market_state']
 
-    active_key = st.session_state.get('dyn_params')
-    auto_mode = active_key == auto_params_key
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Total Investi", f"${detail_result['metrics']['total_invested']:,.0f}")
+            st.metric("Valeur Finale", f"${detail_result['metrics']['final_value']:,.0f}")
+        with col2:
+            st.metric("XIRR", f"{detail_result['metrics']['xirr']:.2f}%")
+            st.metric("Max Drawdown", f"{detail_result['metrics']['max_drawdown']:.2f}%")
 
-    if active_key in (params_key, auto_params_key):
-        strategies_to_test = _build_auto_strategies() if auto_mode else _build_manual_strategies()
-
-        if not strategies_to_test:
-            st.warning("⚠️ Coche au moins une stratégie à comparer.")
-            return
-
-        with st.spinner("Calcul des stratégies en cours (Zero Look-Ahead Bias)..."):
-            comparison_df = compare_strategies(prices, strategies_to_test, sim_fees, fg_history, long_prices, vix_history)
-
-            if auto_mode:
-                st.markdown("### 🏅 Top 3 (cette fenêtre)")
-                top3 = comparison_df.sort_values('XIRR %', ascending=False).head(3).reset_index(drop=True)
-                cols = st.columns(3)
-                for i, col in enumerate(cols):
-                    if i >= len(top3):
-                        continue
-                    row = top3.iloc[i]
-                    with col:
-                        st.metric(f"#{i + 1}", row['Stratégie'], delta=f"{row['XIRR %']:.2f}% XIRR")
-                st.caption(
-                    "⚠️ Classement calculé sur **cette seule fenêtre** : ce n'est pas une prédiction. "
-                    "Une stratégie en tête ici peut être dernière sur une autre période — "
-                    "vérifie sur 🛡️ Robustesse avant d'en tirer une conclusion."
-                )
-
-            st.markdown("### 📋 Tableau comparatif (une seule fenêtre)")
-            display_df = comparison_df.copy()
-            display_df['Investi'] = display_df['Investi'].apply(lambda x: f"${x:,.0f}")
-            display_df['Valeur Finale'] = display_df['Valeur Finale'].apply(lambda x: f"${x:,.0f}")
-            display_df['ROI %'] = display_df['ROI %'].apply(lambda x: f"{x:.2f}%")
-            display_df['XIRR %'] = display_df['XIRR %'].apply(lambda x: f"{x:.2f}%")
-            display_df['Max DD %'] = display_df['Max DD %'].apply(lambda x: f"{x:.2f}%")
-            display_df['Coût de revient'] = display_df['Coût de revient'].apply(
-                lambda x: f"${x:,.0f}" if x >= 1000 else f"${x:,.2f}"
-            )
-            st.dataframe(display_df, width='stretch', hide_index=True)
-
-            fig_bar = go.Figure()
-            fig_bar.add_trace(go.Bar(
-                x=comparison_df['Stratégie'], y=comparison_df['XIRR %'],
-                text=comparison_df['XIRR %'].apply(lambda x: f"{x:.1f}%"), textposition='auto',
-                marker_color='#2a78d6'
+        fig_price = go.Figure()
+        fig_price.add_trace(go.Scatter(x=market_state.index, y=market_state['Close'], mode='lines', name='Prix',
+                                       line=dict(color='#00D4AA', width=2)))
+        if not trades.empty:
+            min_amt, max_amt = trades['amount'].min(), trades['amount'].max()
+            sizes = 5 + 10 * ((trades['amount'] - min_amt) / (max_amt - min_amt)) if max_amt > min_amt else 10
+            colors = []
+            for mult in trades['multiplier']:
+                if mult >= 3.0:
+                    colors.append('#00FF00')
+                elif mult >= 1.5:
+                    colors.append('#FFD700')
+                else:
+                    colors.append('#FF6347')
+            fig_price.add_trace(go.Scatter(
+                x=trades['date'], y=trades['price'], mode='markers', name='Achats (taille = montant)',
+                marker=dict(color=colors, size=sizes, line=dict(width=1, color='white')),
+                hovertemplate="<b>Date:</b> %{x}<br><b>Prix:</b> $%{y:.2f}<br><b>Montant:</b> $%{customdata[0]:.0f}<br><b>Multiplicateur:</b> x%{customdata[1]:.1f}<extra></extra>",
+                customdata=trades[['amount', 'multiplier']].values,
             ))
-            fig_bar.update_layout(height=400, title="Rendement Annualisé (XIRR) par Stratégie",
-                                  xaxis_title="Stratégie", yaxis_title="XIRR (%)", showlegend=False)
-            st.plotly_chart(fig_bar, width='stretch')
+        fig_price.update_layout(height=500, title="Prix d'achat et points d'entrée dynamiques",
+                                xaxis_title="Date", yaxis_title="Prix ($)", hovermode='closest')
+        st.plotly_chart(fig_price, width='stretch')
 
-            st.markdown("### 📈 Toutes les stratégies, une seule courbe chacune")
-            _ms_all = Backtester(prices, strategies_to_test[0], sim_fees, fg_history, long_prices, vix_history).build_market_state()
-            fig_overlay = go.Figure()
-            for strat in strategies_to_test:
-                res = Backtester(prices, strat, sim_fees, fg_history, long_prices, vix_history).run(market_state=_ms_all)
-                label = getattr(strat, 'label', strat.__class__.__name__)
-                if isinstance(strat, VaultDCAStrategy):
-                    label = f"Coffre [{VaultDCAStrategy.INDICATORS[strat.indicator]['label']}]"
-                pv = res['portfolio_values']
-                fig_overlay.add_trace(go.Scatter(
-                    x=pv.index, y=pv, mode='lines', name=label,
-                    hovertemplate=f"<b>{label}</b><br>%{{x|%Y-%m-%d}} : $%{{y:,.0f}}<extra></extra>",
-                ))
-            fig_overlay.update_layout(
-                height=500, xaxis_title="Date", yaxis_title="Valeur du portefeuille ($)", hovermode='x unified',
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
-            )
-            st.plotly_chart(fig_overlay, width='stretch')
-            st.caption(
-                "💡 Clique un nom dans la légende pour cacher/montrer sa courbe, double-clique pour "
-                "l'isoler. La courbe la plus haute à la fin n'a gagné que sur **cette fenêtre précise** — "
-                "voir 🛡️ Robustesse pour savoir si ça se reproduit ailleurs."
-            )
+        fig_port = go.Figure()
+        fig_port.add_trace(go.Scatter(x=portfolio_values.index, y=portfolio_values, mode='lines',
+                                      name='Valeur Portfolio', line=dict(color='#00D4AA', width=2)))
+        fig_port.add_trace(go.Scatter(x=total_invested_series.index, y=total_invested_series, mode='lines',
+                                      name='Total Investi', line=dict(color='#FF6347', width=2, dash='dash')))
+        fig_port.update_layout(height=400, title="Évolution de la valeur vs capital investi",
+                               xaxis_title="Date", yaxis_title="Valeur ($)", hovermode='x unified')
+        st.plotly_chart(fig_port, width='stretch')
 
-            st.markdown("---")
-            labels = comparison_df['Stratégie'].tolist()
-            detail_idx = st.selectbox(
-                "Stratégie à détailler", options=list(range(len(labels))), format_func=lambda i: labels[i],
-                index=1 if (isinstance(strategies_to_test[0], ClassicDCAStrategy) and len(labels) > 1) else 0,
-                key='dyn_detail',
-            )
-            st.subheader(f"🔬 Détail : {labels[detail_idx]}")
-
-            backtester = Backtester(prices, strategies_to_test[detail_idx], sim_fees, fg_history, long_prices, vix_history)
-            detail_result = backtester.run()
-
-            trades = detail_result['trades']
-            portfolio_values = detail_result['portfolio_values']
-            total_invested_series = detail_result['total_invested_series']
-            market_state = detail_result['market_state']
-
-            col1, col2 = st.columns(2)
-            with col1:
-                st.metric("Total Investi", f"${detail_result['metrics']['total_invested']:,.0f}")
-                st.metric("Valeur Finale", f"${detail_result['metrics']['final_value']:,.0f}")
-            with col2:
-                st.metric("XIRR", f"{detail_result['metrics']['xirr']:.2f}%")
-                st.metric("Max Drawdown", f"{detail_result['metrics']['max_drawdown']:.2f}%")
-
-            fig_price = go.Figure()
-            fig_price.add_trace(go.Scatter(x=market_state.index, y=market_state['Close'], mode='lines', name='Prix',
-                                           line=dict(color='#00D4AA', width=2)))
-            if not trades.empty:
-                min_amt, max_amt = trades['amount'].min(), trades['amount'].max()
-                sizes = 5 + 10 * ((trades['amount'] - min_amt) / (max_amt - min_amt)) if max_amt > min_amt else 10
-                colors = []
-                for mult in trades['multiplier']:
-                    if mult >= 3.0:
-                        colors.append('#00FF00')
-                    elif mult >= 1.5:
-                        colors.append('#FFD700')
-                    else:
-                        colors.append('#FF6347')
-                fig_price.add_trace(go.Scatter(
-                    x=trades['date'], y=trades['price'], mode='markers', name='Achats (taille = montant)',
-                    marker=dict(color=colors, size=sizes, line=dict(width=1, color='white')),
-                    hovertemplate="<b>Date:</b> %{x}<br><b>Prix:</b> $%{y:.2f}<br><b>Montant:</b> $%{customdata[0]:.0f}<br><b>Multiplicateur:</b> x%{customdata[1]:.1f}<extra></extra>",
-                    customdata=trades[['amount', 'multiplier']].values,
-                ))
-            fig_price.update_layout(height=500, title="Prix d'achat et points d'entrée dynamiques",
-                                    xaxis_title="Date", yaxis_title="Prix ($)", hovermode='closest')
-            st.plotly_chart(fig_price, width='stretch')
-
-            fig_port = go.Figure()
-            fig_port.add_trace(go.Scatter(x=portfolio_values.index, y=portfolio_values, mode='lines',
-                                          name='Valeur Portfolio', line=dict(color='#00D4AA', width=2)))
-            fig_port.add_trace(go.Scatter(x=total_invested_series.index, y=total_invested_series, mode='lines',
-                                          name='Total Investi', line=dict(color='#FF6347', width=2, dash='dash')))
-            fig_port.update_layout(height=400, title="Évolution de la valeur vs capital investi",
-                                   xaxis_title="Date", yaxis_title="Valeur ($)", hovermode='x unified')
-            st.plotly_chart(fig_port, width='stretch')
-
-            if not trades.empty:
-                st.markdown("### 🎚️ Répartition des mises")
-                mult_counts = trades['multiplier'].round(2).value_counts().sort_index()
-                recap = pd.DataFrame({
-                    'Multiplicateur': [f"x{m:g}" for m in mult_counts.index],
-                    'Nb achats': mult_counts.values,
-                    '% des achats': (mult_counts.values / len(trades) * 100).round(1),
-                    'Capital engagé': [
-                        f"${trades.loc[trades['multiplier'].round(2) == m, 'amount'].sum():,.0f}" for m in mult_counts.index
-                    ],
-                })
-                st.dataframe(recap, width='stretch', hide_index=True)
+        if not trades.empty:
+            st.markdown("### 🎚️ Répartition des mises")
+            mult_counts = trades['multiplier'].round(2).value_counts().sort_index()
+            recap = pd.DataFrame({
+                'Multiplicateur': [f"x{m:g}" for m in mult_counts.index],
+                'Nb achats': mult_counts.values,
+                '% des achats': (mult_counts.values / len(trades) * 100).round(1),
+                'Capital engagé': [
+                    f"${trades.loc[trades['multiplier'].round(2) == m, 'amount'].sum():,.0f}" for m in mult_counts.index
+                ],
+            })
+            st.dataframe(recap, width='stretch', hide_index=True)
 
 
 # ==============================================================================

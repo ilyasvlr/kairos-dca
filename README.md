@@ -22,7 +22,7 @@ ci-dessous s'affichent par onglets, calculées automatiquement — pas de naviga
 | 📊 **Dashboard** | Prix, moyennes mobiles, volume, Fear & Greed (crypto) |
 | 🔬 **Backtest** | DCA classique : rendement, XIRR, drawdown, comparaison de fréquences |
 | 📈 **Indicateurs** | RSI, MACD, Bollinger, ATR, Stochastic RSI ; 200WMA, régression log, Rainbow (crypto) ; données macro FRED (taux Fed, 10 ans, CPI, M2) et DXY, VIX |
-| ⚡ **Dynamic DCA** | **Pédagogique.** Visualise sur *une seule* période comment se comportent les stratégies Drawdown, RSI, Kairos Score et Coffre — dont un bouton « Test automatique » qui lance un panel fixe (8 stratégies) sans rien régler, et un graphique qui superpose toutes leurs courbes de valeur |
+| ⚡ **Dynamic DCA** | **Pédagogique.** Compare automatiquement Classique, Drawdown, RSI, Kairos Score et Coffre — aucun réglage requis (seul le déclencheur du Coffre reste ajustable) — avec un graphique qui superpose toutes leurs courbes de valeur |
 | 🛡️ **Robustesse** | **Décisionnel.** Teste 20 règles « Dry Powder » sur toutes les fenêtres glissantes de l'historique, contre le DCA classique |
 
 La section Robustesse ne donne pas de « réglage optimal ». Elle montre la distribution des résultats de chaque règle :
