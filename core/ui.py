@@ -1,11 +1,11 @@
 """
 UI Module
-Éléments d'interface partagés par toutes les pages
+Éléments d'interface partagés de l'application (app.py, page unique à onglets)
 """
 
 import streamlit as st
 
-APP_VERSION = "1.0"
+APP_VERSION = "1.1"
 
 DISCLAIMER = (
     "⚠️ Kairos DCA est un outil éducatif de backtesting. "
@@ -15,12 +15,7 @@ DISCLAIMER = (
 
 
 def render_disclaimer() -> None:
-    """
-    Avertissement en bas de la sidebar.
-
-    À appeler sur CHAQUE page : en multipage, la sidebar de app.py n'apparaît que
-    sur la page d'accueil, et un visiteur peut arriver directement sur une page.
-    """
+    """Avertissement en bas de la sidebar. Appelé une seule fois par app.py."""
     st.sidebar.markdown("---")
     st.sidebar.caption(DISCLAIMER)
     st.sidebar.caption(f"Kairos DCA v{APP_VERSION}")

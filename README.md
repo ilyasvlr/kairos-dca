@@ -12,16 +12,24 @@ si ces variantes font réellement mieux.
 
 ## Ce que fait l'outil
 
-| Page | Rôle |
+**Une seule page.** Configure l'actif, la période et le budget une fois dans la barre latérale ; les 5 sections
+ci-dessous s'affichent par onglets, calculées automatiquement — pas de navigation entre pages séparées.
+
+| Onglet | Rôle |
 | --- | --- |
 | 📊 **Dashboard** | Prix, moyennes mobiles, volume, Fear & Greed (crypto) |
 | 🔬 **Backtest** | DCA classique : rendement, XIRR, drawdown, comparaison de fréquences |
 | 📈 **Indicateurs** | RSI, MACD, Bollinger, ATR, Stochastic RSI ; 200WMA, régression log, Rainbow (crypto) ; données macro FRED (taux Fed, 10 ans, CPI, M2) et DXY, VIX |
-| ⚡ **Dynamic DCA** | **Pédagogique.** Visualise sur *une seule* période comment se comportent les stratégies Drawdown, RSI, Kairos Score et Coffre. Un bouton « Test automatique » lance un panel fixe et classe les résultats (toujours sur cette seule fenêtre) |
+| ⚡ **Dynamic DCA** | **Pédagogique.** Visualise sur *une seule* période comment se comportent les stratégies Drawdown, RSI, Kairos Score et Coffre — dont un bouton « Test automatique » qui lance un panel fixe (8 stratégies) sans rien régler, et un graphique qui superpose toutes leurs courbes de valeur |
 | 🛡️ **Robustesse** | **Décisionnel.** Teste 20 règles « Dry Powder » sur toutes les fenêtres glissantes de l'historique, contre le DCA classique |
 
-La page Robustesse ne donne pas de « réglage optimal ». Elle montre la distribution des résultats de chaque règle :
+La section Robustesse ne donne pas de « réglage optimal ». Elle montre la distribution des résultats de chaque règle :
 % de fenêtres gagnées, écart médian, pire fenêtre, cash resté dormant, et stabilité du classement dans le temps.
+
+**Coût de la page unique** : les 5 sections calculent toutes en une fois à chaque interaction (Streamlit exécute
+le script entier à chaque clic, y compris les onglets non visibles à l'écran). Le chargement initial est donc
+plus lent (~30-40 s la première fois pour un nouvel actif, le temps de tout télécharger) ; les interactions
+suivantes restent rapides grâce au cache.
 
 **Sélection d'actif** : un seul menu recherchable (crypto, actions, ETF, et indices mondiaux — MSCI World,
 MSCI ACWI, Total World Stock), plutôt que deux menus dépendants.
@@ -90,16 +98,21 @@ L'application s'ouvre sur `http://localhost:8501`.
 1. Pousser le projet sur un dépôt GitHub.
 2. Sur [share.streamlit.io](https://share.streamlit.io) : **New app**, choisir le dépôt, branche `main`, fichier principal `app.py`.
 3. **Advanced settings → Python version → 3.12**.
-4. Déployer, puis ouvrir chaque page : si Yahoo Finance limite les requêtes du serveur, les pages l'indiquent
-   par un message et récupèrent au prochain chargement (les échecs ne sont pas mis en cache).
+4. Déployer, puis ouvrir l'app : si Yahoo Finance limite les requêtes du serveur, un message clair l'indique
+   et la donnée récupère au prochain chargement (les échecs ne sont pas mis en cache).
 
 Aucune clé API n'est nécessaire (FRED est interrogé via son export CSV public). Si une clé est ajoutée un jour,
 la saisir dans les *Secrets* de Streamlit Cloud, jamais dans le dépôt.
 
 ## Structure
 
+Application à page unique (`app.py`) : la barre latérale configure l'actif/la période/le budget une seule fois,
+puis 5 fonctions `render_*` remplissent chacune un onglet (`st.tabs`). Pas de dossier `pages/` — Streamlit
+n'affiche donc pas sa navigation automatique multi-pages, qui aurait recréé le problème que les onglets résolvent.
+
 ```text
-app.py                     Accueil et configuration (actif, période, budget, frais)
+app.py                     Sidebar de configuration + les 5 onglets (render_dashboard, render_backtest,
+                            render_indicators, render_dynamic_dca, render_robustness)
 core/
   backtester.py            Moteur de backtest et stratégies (Classique, Drawdown, RSI, Kairos Score, Dry Powder, Coffre)
   robustness.py            Carte de robustesse sur fenêtres glissantes
@@ -107,13 +120,7 @@ core/
   data_fetcher.py          Prix (yfinance) et Fear & Greed (alternative.me)
   macro_data.py            Séries FRED, DXY, VIX
   indicators.py            Indicateurs techniques et on-chain (approximations)
-  ui.py                    Avertissement partagé par toutes les pages
-pages/
-  1_📊_Dashboard.py
-  2_🔬_Backtest.py
-  3_📈_Indicators.py
-  4_⚡_Dynamic_DCA.py
-  5_🛡️_Robustness.py
+  ui.py                    Avertissement partagé, affiché une fois par app.py
 ```
 
 ## Stack
