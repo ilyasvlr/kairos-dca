@@ -1,11 +1,15 @@
 """
 Robustness Module
-Carte de robustesse des stratégies Dry Powder
+Carte de robustesse des stratégies à réserve de cash (Dry Powder + Coffre).
 
 Chaque configuration d'une grille FIXÉE À L'AVANCE est évaluée sur toutes les
 fenêtres glissantes de l'historique, contre le DCA classique sur la même fenêtre.
 Rien n'est ajusté sur les données : chaque fenêtre complète est hors échantillon
 pour la grille, d'où l'absence de découpage IS/OOS.
+
+Deux familles de configurations, toutes évaluées de la même façon :
+  - 'dry_powder' : réserve partielle déclenchée par le drawdown (DryPowderDCAStrategy)
+  - 'vault'       : réserve totale déclenchée par RSI, VIX ou Fear & Greed (VaultDCAStrategy)
 
 Métrique principale : l'écart de valeur finale (%) contre le classique. Les deux
 stratégies versent exactement les mêmes montants aux mêmes dates, donc cet écart
@@ -19,10 +23,20 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 
-from .backtester import Backtester, ClassicDCAStrategy, DryPowderDCAStrategy
+from .backtester import Backtester, ClassicDCAStrategy, DryPowderDCAStrategy, VaultDCAStrategy
 
 DEFAULT_RESERVES = (0.2, 0.3, 0.4, 0.5, 0.6)
 DEFAULT_THRESHOLDS = (-0.15, -0.25, -0.35, -0.45)
+
+# Seuils testés par indicateur pour la famille 'vault'. rearm=False fixé : déjà
+# montré systématiquement meilleur que rearm=True sur Drawdown (voir historique
+# du projet) — doubler la grille pour re-tester ce point sur chaque indicateur
+# n'apporterait rien et alourdirait le calcul.
+VAULT_THRESHOLDS = {
+    'rsi': (20.0, 25.0, 30.0, 35.0, 40.0),
+    'vix': (20.0, 25.0, 30.0, 35.0, 40.0),
+    'fear_greed': (15.0, 20.0, 25.0, 30.0, 35.0),
+}
 
 
 def build_grid(
@@ -32,14 +46,36 @@ def build_grid(
     rearm: bool = False,
 ) -> List[Dict]:
     """
-    Grille cartésienne de configurations.
+    Grille cartésienne de configurations Dry Powder (déclencheur : drawdown).
     Réserve 0% exclue : c'est le DCA classique, la référence (écart nul par construction).
     """
     return [
-        dict(reserve_ratio=r, dip_threshold=t, deployment_multiplier=m, rearm=rearm)
-        for r, t, m in product(reserves, thresholds, multipliers)
-        if r > 0
+        dict(kind='dry_powder', reserve_ratio=r, dip_threshold=t, deployment_multiplier=m, rearm=rearm,
+            label=f"Drawdown r={r:.0%} seuil={t:.0%}")
+        for r, t in product(reserves, thresholds)
+        for m in multipliers
     ]
+
+
+def build_vault_grid(
+    indicators: Sequence[str] = ('rsi', 'vix', 'fear_greed'),
+    thresholds_by_indicator: Dict[str, Sequence[float]] = VAULT_THRESHOLDS,
+    rearm: bool = False,
+) -> List[Dict]:
+    """
+    Grille de configurations Coffre (réserve totale) : un déclencheur autre que
+    le drawdown, à plusieurs seuils chacun. 'fear_greed' n'a de sens que sur
+    crypto — filtré en amont par l'appelant si l'actif est une action/ETF.
+    """
+    configs = []
+    for indicator in indicators:
+        for threshold in thresholds_by_indicator[indicator]:
+            label_name = VaultDCAStrategy.INDICATORS[indicator]['label']
+            configs.append(dict(
+                kind='vault', indicator=indicator, threshold=threshold, rearm=rearm,
+                label=f"Coffre [{label_name}] seuil={threshold:g}",
+            ))
+    return configs
 
 
 def generate_windows(
@@ -63,6 +99,16 @@ def generate_windows(
     return windows
 
 
+def _build_strategy(config: Dict, base_budget: float, frequency: str):
+    """Instancie la bonne classe de stratégie selon `config['kind']`."""
+    params = {k: v for k, v in config.items() if k not in ('kind', 'label')}
+    if config['kind'] == 'dry_powder':
+        return DryPowderDCAStrategy(base_budget=base_budget, frequency=frequency, **params)
+    elif config['kind'] == 'vault':
+        return VaultDCAStrategy(base_budget=base_budget, frequency=frequency, **params)
+    raise ValueError(f"kind inconnu: {config['kind']!r}")
+
+
 def evaluate_window(
     history: pd.DataFrame,
     start: pd.Timestamp,
@@ -71,6 +117,8 @@ def evaluate_window(
     frequency: str = 'weekly',
     fees: float = 0.001,
     base_budget: float = 100.0,
+    fear_greed_history: Optional[pd.DataFrame] = None,
+    vix_history: Optional[pd.DataFrame] = None,
 ) -> List[Dict]:
     """
     Évalue toutes les configurations sur une fenêtre.
@@ -78,16 +126,21 @@ def evaluate_window(
     L'historique complet sert à amorcer l'ATH : c'est causal (vérifié par le test
     de troncature), les données postérieures à chaque jour ne sont jamais lues.
     Le budget n'influence pas les écarts relatifs (tout est linéaire, frais inclus).
+    fear_greed_history / vix_history : nécessaires pour évaluer les configs
+    'vault' dont l'indicateur est 'fear_greed' / 'vix' ; sans eux, ces indicateurs
+    restent NaN et la stratégie n'achète jamais que via la réserve jamais
+    déclenchée (voir VaultDCAStrategy._is_triggered) — pas d'erreur, mais un
+    résultat qui ne reflète pas le vrai indicateur.
     """
     window = history.loc[start:end]
-    classic_bt = Backtester(window, ClassicDCAStrategy(base_budget, frequency), fees, None, history)
+    classic_bt = Backtester(window, ClassicDCAStrategy(base_budget, frequency), fees, fear_greed_history, history, vix_history)
     market_state = classic_bt.build_market_state()
     classic = classic_bt.run(market_state=market_state)['metrics']
 
     rows = []
     for config in configs:
-        strategy = DryPowderDCAStrategy(base_budget=base_budget, frequency=frequency, **config)
-        result = Backtester(window, strategy, fees, None, history).run(market_state=market_state)
+        strategy = _build_strategy(config, base_budget, frequency)
+        result = Backtester(window, strategy, fees, fear_greed_history, history, vix_history).run(market_state=market_state)
         m = result['metrics']
 
         pv = result['portfolio_values']
@@ -108,9 +161,19 @@ def evaluate_window(
 
 
 def summarize(rows: pd.DataFrame) -> pd.DataFrame:
-    """Une ligne par configuration : distribution des écarts sur toutes les fenêtres"""
-    keys = ['reserve_ratio', 'dip_threshold', 'deployment_multiplier', 'rearm']
-    summary = rows.groupby(keys).agg(
+    """
+    Une ligne par configuration : distribution des écarts sur toutes les fenêtres.
+
+    Regroupé par `label` (identifiant humainement lisible et unique par config) :
+    marche pour les deux familles ('dry_powder' a reserve_ratio/dip_threshold,
+    'vault' a indicator/threshold — pas de colonnes communes à grouper dessus).
+    Les colonnes spécifiques (reserve_ratio, indicator, ...) sont réattachées via
+    `first()` : identiques pour toutes les lignes d'un même label par construction.
+    """
+    other_cols = [c for c in rows.columns if c not in (
+        'label', 'window_start', 'window_end', 'value_gap_pct', 'xirr_excess', 'xirr', 'classic_xirr', 'cash_share_avg'
+    )]
+    summary = rows.groupby('label', sort=False).agg(
         n_windows=('value_gap_pct', 'size'),
         win_rate=('value_gap_pct', lambda s: (s > 0).mean() * 100),
         gap_median=('value_gap_pct', 'median'),
@@ -119,11 +182,12 @@ def summarize(rows: pd.DataFrame) -> pd.DataFrame:
         gap_std=('value_gap_pct', 'std'),
         xirr_excess_median=('xirr_excess', 'median'),
         cash_share_avg=('cash_share_avg', 'mean'),
+        **{c: (c, 'first') for c in other_cols},
     ).reset_index()
     return summary.sort_values('gap_median', ascending=False).reset_index(drop=True)
 
 
-def rank_stability(rows: pd.DataFrame) -> Optional[Dict]:
+def rank_stability(rows: pd.DataFrame, kind: Optional[str] = None) -> Optional[Dict]:
     """
     Le classement de la carte est-il stable dans le temps ?
 
@@ -132,7 +196,15 @@ def rank_stability(rows: pd.DataFrame) -> Optional[Dict]:
     médian dans chaque groupe et renvoie la corrélation de rang entre les deux.
     Proche de 1 : le classement passé a prédit le classement futur.
     Proche de 0 ou négatif : choisir « la meilleure ligne » revient à tirer au sort.
+
+    kind : restreint la comparaison à une famille ('dry_powder' ou 'vault') si
+    fourni — mélanger des familles aux échelles différentes n'a pas de sens ici.
     """
+    if kind is not None:
+        rows = rows[rows['kind'] == kind]
+        if rows.empty:
+            return None
+
     first, last = rows['window_start'].min(), rows['window_end'].max()
     mid = first + (last - first) / 2
     early = rows[rows['window_end'] <= mid]
@@ -140,9 +212,8 @@ def rank_stability(rows: pd.DataFrame) -> Optional[Dict]:
     if early['window_start'].nunique() < 2 or late['window_start'].nunique() < 2:
         return None
 
-    keys = ['reserve_ratio', 'dip_threshold', 'deployment_multiplier', 'rearm']
-    med_early = early.groupby(keys)['value_gap_pct'].median()
-    med_late = late.groupby(keys)['value_gap_pct'].median()
+    med_early = early.groupby('label')['value_gap_pct'].median()
+    med_late = late.groupby('label')['value_gap_pct'].median()
     both = pd.concat([med_early.rename('early'), med_late.rename('late')], axis=1).dropna()
     if len(both) < 3:
         return None
@@ -165,6 +236,8 @@ def compute_robustness_map(
     window_years: int = 3,
     step_months: int = 6,
     warmup_years: int = 1,
+    fear_greed_history: Optional[pd.DataFrame] = None,
+    vix_history: Optional[pd.DataFrame] = None,
     progress: Optional[Callable[[int, int], None]] = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
@@ -183,7 +256,10 @@ def compute_robustness_map(
 
     all_rows = []
     for i, (start, end) in enumerate(windows):
-        all_rows.extend(evaluate_window(history, start, end, configs, frequency, fees))
+        all_rows.extend(evaluate_window(
+            history, start, end, configs, frequency, fees,
+            fear_greed_history=fear_greed_history, vix_history=vix_history,
+        ))
         if progress is not None:
             progress(i + 1, len(windows))
 

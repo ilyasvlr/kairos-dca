@@ -35,7 +35,7 @@ from core.backtester import (
     Backtester,
     compare_strategies,
 )
-from core.robustness import build_grid, compute_robustness_map, rank_stability
+from core.robustness import build_grid, build_vault_grid, compute_robustness_map, rank_stability
 from core.ui import render_disclaimer
 
 st.title("🎯 Kairos DCA")
@@ -918,13 +918,24 @@ elle te montre **la distribution des résultats** de chaque règle, pour que tu 
     def cached_map(ticker, asset_type, end, frequency, fees, window_years, step_months):
         if asset_type == 'crypto':
             history = fetch_crypto_data(ticker, "2010-01-01", end)
+            fg_hist = fetch_fear_greed_history(days=4000)
+            vault_indicators = ('rsi', 'vix', 'fear_greed')
         else:
             history = fetch_stock_data(ticker, "1990-01-01", end)
+            fg_hist = None
+            vault_indicators = ('rsi', 'vix')  # Fear & Greed n'existe pas hors crypto
         if history.empty:
             raise ValueError("Impossible de charger l'historique")
+        vix_hist = fetch_vix_history("1990-01-01", end)
+
+        # Grille complète : Drawdown (réserve partielle) + RSI/VIX/Fear&Greed (Coffre,
+        # réserve totale) — tous les indicateurs de l'app, testés sur tout l'historique.
+        configs = build_grid() + build_vault_grid(indicators=vault_indicators)
+
         summary, rows = compute_robustness_map(
-            history, build_grid(), frequency=frequency, fees=fees,
+            history, configs, frequency=frequency, fees=fees,
             window_years=window_years, step_months=step_months,
+            fear_greed_history=fg_hist, vix_history=vix_hist,
         )
         meta = {
             'history_start': history.index[0], 'history_end': history.index[-1],
@@ -946,8 +957,10 @@ elle te montre **la distribution des résultats** de chaque règle, pour que tu 
     st.subheader("🎯 Vue d'ensemble")
     st.caption(
         f"Historique {meta['history_start']:%Y-%m-%d} → {meta['history_end']:%Y-%m-%d} "
-        f"({meta['span_years']:.1f} ans, la 1re année sert à amorcer l'ATH). "
-        f"Grille : réserve 20-60% × seuil -15% à -45%, déploiement 100% de la réserve, sans réarmement."
+        f"({meta['span_years']:.1f} ans, la 1re année sert à amorcer l'ATH/200WMA). "
+        f"Grille : {len(summary)} configurations — Drawdown (réserve 20-60% × seuil -15% à -45%) "
+        f"+ Coffre sur RSI/VIX{'/Fear&Greed' if asset_type == 'crypto' else ''} "
+        f"(seuils 15 à 40, réserve 100%), toutes sans réarmement."
     )
 
     n_majority = int((summary['win_rate'] > 50).sum())
@@ -988,12 +1001,13 @@ elle te montre **la distribution des résultats** de chaque règle, pour que tu 
         )
         (st.info if rho >= 0.5 else st.warning)(msg)
 
-    st.subheader("🗺️ Réserve × seuil de déclenchement")
-    reserves = sorted(summary['reserve_ratio'].unique())
-    thresholds = sorted(summary['dip_threshold'].unique(), reverse=True)
-    grid_gap = summary.pivot(index='reserve_ratio', columns='dip_threshold', values='gap_median').loc[reserves, thresholds]
-    grid_win = summary.pivot(index='reserve_ratio', columns='dip_threshold', values='win_rate').loc[reserves, thresholds]
-    grid_worst = summary.pivot(index='reserve_ratio', columns='dip_threshold', values='gap_worst').loc[reserves, thresholds]
+    st.subheader("🗺️ Drawdown : réserve × seuil de déclenchement")
+    dp_summary = summary[summary['kind'] == 'dry_powder']
+    reserves = sorted(dp_summary['reserve_ratio'].unique())
+    thresholds = sorted(dp_summary['dip_threshold'].unique(), reverse=True)
+    grid_gap = dp_summary.pivot(index='reserve_ratio', columns='dip_threshold', values='gap_median').loc[reserves, thresholds]
+    grid_win = dp_summary.pivot(index='reserve_ratio', columns='dip_threshold', values='win_rate').loc[reserves, thresholds]
+    grid_worst = dp_summary.pivot(index='reserve_ratio', columns='dip_threshold', values='gap_worst').loc[reserves, thresholds]
 
     x_labels = [f"{t * 100:.0f}%" for t in thresholds]
     y_labels = [f"{r * 100:.0f}%" for r in reserves]
@@ -1018,34 +1032,60 @@ elle te montre **la distribution des résultats** de chaque règle, pour que tu 
     st.plotly_chart(fig_heat, width='stretch')
     st.caption("Bleu : fait mieux que le DCA classique en médiane · rouge : moins bien · gris : équivalent. Chaque case indique l'écart médian et le % de fenêtres gagnées.")
 
-    st.subheader("📋 Distribution par configuration")
+    # --- Coffre (RSI / VIX / Fear & Greed) : un graphique par indicateur ---
+    vault_summary = summary[summary['kind'] == 'vault']
+    if not vault_summary.empty:
+        st.subheader("🔒 Coffre : écart médian par seuil, un indicateur à la fois")
+        indicators_present = [i for i in ('rsi', 'vix', 'fear_greed') if i in vault_summary['indicator'].values]
+        cols = st.columns(len(indicators_present))
+        for col, indicator in zip(cols, indicators_present):
+            with col:
+                sub = vault_summary[vault_summary['indicator'] == indicator].sort_values('threshold')
+                ind_label = VaultDCAStrategy.INDICATORS[indicator]['label']
+                fig_ind = go.Figure(go.Bar(
+                    x=sub['threshold'], y=sub['gap_median'],
+                    marker_color=[COLOR_POS if v > 0 else COLOR_NEG for v in sub['gap_median']],
+                    customdata=sub[['win_rate', 'gap_worst']].values,
+                    hovertemplate=(f"{ind_label} seuil %{{x}}<br>Écart médian : %{{y:+.2f}}%<br>"
+                                  "Bat le classique : %{customdata[0]:.0f}% des fenêtres<br>"
+                                  "Pire fenêtre : %{customdata[1]:+.2f}%<extra></extra>"),
+                ))
+                fig_ind.add_hline(y=0, line_color="#b5b4af", line_width=1)
+                fig_ind.update_layout(height=280, title=ind_label, xaxis_title="Seuil",
+                                      yaxis_title="Écart médian (%)", margin=dict(l=10, r=10, t=40, b=10), showlegend=False)
+                st.plotly_chart(fig_ind, width='stretch')
+        st.caption("Même lecture que la heatmap Drawdown : bleu = mieux que le classique en médiane, rouge = moins bien.")
+
+    st.subheader("📋 Toutes les configurations, tous indicateurs confondus")
     table = pd.DataFrame({
-        'Réserve (%)': summary['reserve_ratio'] * 100, 'Seuil (%)': summary['dip_threshold'] * 100,
+        'Configuration': summary['label'],
         'Fenêtres gagnées (%)': summary['win_rate'], 'Écart médian (%)': summary['gap_median'],
         'Pire fenêtre (%)': summary['gap_worst'], 'Meilleure fenêtre (%)': summary['gap_best'],
         'Dispersion (pts)': summary['gap_std'], 'Écart XIRR médian (pp)': summary['xirr_excess_median'],
         'Cash dormant moyen (%)': summary['cash_share_avg'],
     })
     st.dataframe(table, width='stretch', hide_index=True, column_config={
-        'Réserve (%)': st.column_config.NumberColumn(format="%.0f"), 'Seuil (%)': st.column_config.NumberColumn(format="%.0f"),
         'Fenêtres gagnées (%)': st.column_config.NumberColumn(format="%.0f"), 'Écart médian (%)': st.column_config.NumberColumn(format="%.2f"),
         'Pire fenêtre (%)': st.column_config.NumberColumn(format="%.2f"), 'Meilleure fenêtre (%)': st.column_config.NumberColumn(format="%.2f"),
         'Dispersion (pts)': st.column_config.NumberColumn(format="%.2f"), 'Écart XIRR médian (pp)': st.column_config.NumberColumn(format="%.2f"),
         'Cash dormant moyen (%)': st.column_config.NumberColumn(format="%.1f"),
     })
-    st.caption("Écart = valeur finale (coins + cash) de la règle ÷ valeur finale du DCA classique − 1, sur la même fenêtre. Cash dormant moyen = part moyenne du portefeuille restée en cash. Trié par écart médian décroissant.")
+    st.caption(
+        "Écart = valeur finale (coins + cash) de la règle ÷ valeur finale du DCA classique − 1, sur la même fenêtre. "
+        "Cash dormant moyen = part moyenne du portefeuille restée en cash. Trié par écart médian décroissant : "
+        "la 1re ligne est celle qui a fait le mieux **en médiane sur tout l'historique** — regarde quand même sa "
+        "pire fenêtre et sa stabilité (ci-dessus) avant de t'y fier."
+    )
 
     st.subheader("🔍 Quand une règle fonctionne-t-elle ?")
     options = list(summary.index)
     choice = st.selectbox(
         "Configuration", options=options,
-        format_func=lambda i: (f"Réserve {summary.loc[i, 'reserve_ratio'] * 100:.0f}% · "
-                               f"seuil {summary.loc[i, 'dip_threshold'] * 100:.0f}% "
-                               f"(médiane {summary.loc[i, 'gap_median']:+.2f}%)"),
+        format_func=lambda i: f"{summary.loc[i, 'label']} (médiane {summary.loc[i, 'gap_median']:+.2f}%)",
         key='rob_config_choice',
     )
     sel = summary.loc[choice]
-    detail = rows[(rows['reserve_ratio'] == sel['reserve_ratio']) & (rows['dip_threshold'] == sel['dip_threshold'])].sort_values('window_start')
+    detail = rows[rows['label'] == sel['label']].sort_values('window_start')
 
     fig_detail = go.Figure(go.Bar(
         x=detail['window_start'], y=detail['value_gap_pct'],
@@ -1063,7 +1103,7 @@ elle te montre **la distribution des résultats** de chaque règle, pour que tu 
     st.caption("Chaque barre est une fenêtre. Des barres voisines partagent la plupart de leurs données : une série de barres bleues consécutives correspond souvent à un seul épisode de marché.")
 
     st.markdown("---")
-    st.caption("⚠️ Choisir la meilleure ligne de ce tableau reste une sélection sur le passé : sur 20 règles, l'une d'elles finira en tête même par hasard. Fie-toi à la stabilité du classement et à la pire fenêtre, pas seulement à l'écart médian.")
+    st.caption(f"⚠️ Choisir la meilleure ligne de ce tableau reste une sélection sur le passé : sur {len(summary)} règles, l'une d'elles finira en tête même par hasard. Fie-toi à la stabilité du classement et à la pire fenêtre, pas seulement à l'écart médian.")
 
 
 # ==============================================================================

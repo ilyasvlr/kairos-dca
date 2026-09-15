@@ -29,9 +29,11 @@ La section Robustesse ne donne pas de « réglage optimal ». Elle montre la dis
 % de fenêtres gagnées, écart médian, pire fenêtre, cash resté dormant, et stabilité du classement dans le temps.
 
 **Coût de la page unique** : les 5 sections calculent toutes en une fois à chaque interaction (Streamlit exécute
-le script entier à chaque clic, y compris les onglets non visibles à l'écran). Le chargement initial est donc
-plus lent (~30-40 s la première fois pour un nouvel actif, le temps de tout télécharger) ; les interactions
-suivantes restent rapides grâce au cache.
+le script entier à chaque clic, y compris les onglets non visibles à l'écran) — et il n'y a plus aucun bouton
+« lancer » nulle part : tout se recalcule automatiquement dès qu'un réglage change. Le chargement initial est
+donc plus lent (~10-55 s la première fois pour un nouvel actif selon la taille de son historique — SPY, avec
+33 ans de données et 60 fenêtres de robustesse, est le plus lent) ; les interactions suivantes restent rapides
+grâce au cache.
 
 **Sélection d'actif** : un seul menu recherchable (crypto, actions, ETF, et indices mondiaux — MSCI World,
 MSCI ACWI, Total World Stock), plutôt que deux menus dépendants.
@@ -43,18 +45,22 @@ qu'il soit acheté ou qu'il dorme en réserve — jamais perdu, jamais dépassé
 
 ## Ce que montrent les données
 
-Résultats de la carte de robustesse au 14/09/2026 (fenêtres de 3 ans décalées de 6 mois, DCA hebdomadaire,
-réserve de 20 à 60 %, seuil de déclenchement de −15 % à −45 %) :
+Résultats de la carte de robustesse au 14/09/2026 (fenêtres de 3 ans décalées de 6 mois, DCA hebdomadaire ;
+grille combinée : Drawdown réserve 20-60 % × seuil −15 % à −45 % (20 configs) + Coffre sur RSI/VIX/Fear & Greed,
+seuils 15 à 40 (10-15 configs selon l'actif)) :
 
 | Actif | Fenêtres (périodes indépendantes) | Règles gagnantes > 50 % du temps | Meilleur écart médian | Stabilité du classement |
 | --- | --- | --- | --- | --- |
-| BTC | 16 (≈ 3.7) | **0 / 20** | −0.23 % | −0.61 (instable) |
-| ETH | 10 (≈ 2.6) | 5 / 20 | +2.76 % | +0.22 (faible) |
-| SPY | 60 (≈ 10.9) | **0 / 20** | −0.18 % | +0.86 (stable) |
+| BTC | 16 (≈ 3.7) | **0 / 35** | −0.23 % (Drawdown) | +0.48 (moyenne) |
+| ETH | 10 (≈ 2.6) | 6 / 35 | +11.58 % (Coffre RSI seuil 20) | +0.09 (très faible) |
+| SPY | 60 (≈ 10.9) | **0 / 30** | −0.18 % (Drawdown) | +0.82 (stable) |
 
-**Garder une réserve de cash pour « acheter les creux » n'a pas battu le DCA classique sur BTC ni sur le S&P 500.**
-Sur SPY, le résultat est stable sur 33 ans : plus la réserve est grosse, plus l'écart est défavorable.
-ETH est le seul signal positif, mais il repose sur environ 2.6 périodes de marché indépendantes : trop peu pour conclure.
+**Garder une réserve de cash pour « acheter les creux » n'a pas battu le DCA classique sur BTC ni sur le S&P 500**,
+quel que soit l'indicateur (Drawdown, RSI, VIX ou Fear & Greed) : aucune des 30-35 règles testées ne gagne
+plus d'une fenêtre sur deux. Sur SPY, le résultat est stable sur 33 ans : plus la réserve est grosse, plus
+l'écart est défavorable. ETH montre un signal positif plus marqué qu'avant (un Coffre RSI à seuil 20 gagne 60 %
+des fenêtres), mais il ne repose que sur ~2.6 périodes de marché indépendantes et sa stabilité de classement
+est quasi nulle (+0.09) : bien trop peu pour en tirer une conclusion.
 
 Une première version de l'outil optimisait les paramètres automatiquement (Optuna). Elle a été retirée :
 testés sur des fenêtres glissantes, les « meilleurs paramètres » ne battaient le classique hors échantillon
@@ -117,7 +123,7 @@ app.py                     Sidebar de configuration + les 5 onglets (render_dash
                             render_indicators, render_dynamic_dca, render_robustness)
 core/
   backtester.py            Moteur de backtest et stratégies (Classique, Drawdown, RSI, Kairos Score, Dry Powder, Coffre)
-  robustness.py            Carte de robustesse sur fenêtres glissantes
+  robustness.py            Carte de robustesse sur fenêtres glissantes (Drawdown + Coffre RSI/VIX/Fear&Greed)
   metrics.py               XIRR, drawdown, Sharpe, Sortino
   data_fetcher.py          Prix (yfinance) et Fear & Greed (alternative.me)
   macro_data.py            Séries FRED, DXY, VIX
@@ -126,6 +132,7 @@ core/
 tests/
   test_backtester.py       Conservation du capital, causalité (zéro biais d'anticipation), déterminisme, validation
   test_metrics.py          XIRR (valeurs de référence, cas limites)
+  test_robustness.py       Construction de grille, agrégation multi-familles (Drawdown + Coffre)
   conftest.py               Prix synthétiques partagés (aucun appel réseau, rapide et reproductible en CI)
 ```
 
@@ -137,7 +144,7 @@ pytest -v
 ```
 
 Tourne automatiquement sur chaque push via GitHub Actions (badge en haut de page). Les tests utilisent des prix
-synthétiques générés localement — aucun appel réseau — pour rester rapides et fiables en CI (~2 s, 40 tests).
+synthétiques générés localement — aucun appel réseau — pour rester rapides et fiables en CI (~2 s, 45 tests).
 Le test le plus important, `test_causality_via_truncation`, vérifie qu'aucune stratégie ne regarde le futur :
 en tronquant la série de prix après un certain point, les achats déjà passés doivent rester strictement identiques.
 
